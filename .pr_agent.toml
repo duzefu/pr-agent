@@ -15,6 +15,13 @@ push_commands = [
     "/agentic_review"
 ]
 
+[gitlab]
+handle_standalone_push_trigger = true
+standalone_push_commands = [
+"/review",
+"/improve",
+]
+
 [review_agent]
 enabled = true
 publish_output = true
