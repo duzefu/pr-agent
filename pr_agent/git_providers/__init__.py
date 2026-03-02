@@ -57,9 +57,14 @@ def get_git_provider_with_context(pr_url) -> GitProvider:
     else:
         try:
             provider_id = get_settings().config.git_provider
-            if provider_id not in _GIT_PROVIDERS:
+            # Detect GitLab standalone push event URL (contains /-/push/)
+            if provider_id == 'gitlab' and pr_url and '/-/push/' in pr_url:
+                from pr_agent.git_providers.gitlab_push_provider import GitLabPushProvider
+                git_provider = GitLabPushProvider(pr_url)
+            elif provider_id not in _GIT_PROVIDERS:
                 raise ValueError(f"Unknown git provider: {provider_id}")
-            git_provider = _GIT_PROVIDERS[provider_id](pr_url)
+            else:
+                git_provider = _GIT_PROVIDERS[provider_id](pr_url)
             if is_context_env:
                 context["git_provider"] = {pr_url: git_provider}
             return git_provider

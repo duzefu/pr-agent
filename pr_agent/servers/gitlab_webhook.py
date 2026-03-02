@@ -60,6 +60,30 @@ async def _perform_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: 
             get_logger().error(f"Failed to perform command {command}: {e}")
 
 
+async def _perform_push_commands_gitlab(commands_conf: str, agent: PRAgent, api_url: str,
+                                        log_context: dict):
+    """
+    Execute commands for a standalone GitLab push event.
+    Unlike _perform_commands_gitlab, this does not call should_process_pr_logic
+    since push events have no object_attributes.
+    """
+    apply_repo_settings(api_url)
+    commands = get_settings().get(f"gitlab.{commands_conf}", {})
+    get_settings().set("config.is_auto_command", True)
+    for command in commands:
+        try:
+            split_command = command.split(" ")
+            command = split_command[0]
+            args = split_command[1:]
+            other_args = update_settings_from_args(args)
+            new_command = ' '.join([command] + other_args)
+            get_logger().info(f"Performing push command: {new_command}")
+            with get_logger().contextualize(**log_context):
+                await agent.handle_request(api_url, new_command)
+        except Exception as e:
+            get_logger().error(f"Failed to perform push command {command}: {e}")
+
+
 def is_bot_user(data) -> bool:
     try:
         # logic to ignore bot users (unlike Github, no direct flag for bot users in gitlab)
@@ -255,6 +279,46 @@ async def gitlab_webhook(background_tasks: BackgroundTasks, request: Request):
 
                 # same as open MR
                 await _perform_commands_gitlab("pr_commands", PRAgent(), url, log_context, data)
+
+        elif data.get('object_kind') == 'push':
+            before_sha = data.get('before', '')
+            after_sha = data.get('after', '')
+            ref = data.get('ref', '')  # "refs/heads/branch-name"
+            branch = ref.replace('refs/heads/', '') if ref.startswith('refs/heads/') else ref
+            project_url = data.get('project', {}).get('web_url', '')
+
+            # Skip branch deletion events (after_sha is all zeros)
+            if not after_sha or after_sha == '0' * 40:
+                get_logger().info("Skipping push event: branch deletion")
+                return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+
+            # Skip initial branch creation (before_sha is all zeros — no base to compare)
+            if not before_sha or before_sha == '0' * 40:
+                get_logger().info("Skipping push event: initial branch creation (no base commit)")
+                return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+
+            if not project_url:
+                get_logger().warning("Skipping push event: missing project.web_url")
+                return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+
+            # Construct internal push URL used as the provider identifier
+            push_url = f"{project_url}/-/push/{before_sha}/{after_sha}"
+
+            # Store push context for GitLabPushProvider
+            context['push_branch'] = branch
+            context['push_commits'] = data.get('commits', [])
+
+            get_logger().info(f"Standalone push event: branch={branch}, {before_sha[:8]}..{after_sha[:8]}")
+
+            # Apply repo settings first so handle_standalone_push_trigger can be overridden per repo
+            apply_repo_settings(push_url)
+            handle_push = get_settings().get("gitlab.handle_standalone_push_trigger", False)
+            push_commands = get_settings().get("gitlab.standalone_push_commands", [])
+            if not handle_push or not push_commands:
+                get_logger().info("Standalone push trigger is disabled or no commands configured, skipping")
+                return JSONResponse(status_code=status.HTTP_200_OK, content=jsonable_encoder({"message": "success"}))
+
+            await _perform_push_commands_gitlab("standalone_push_commands", PRAgent(), push_url, log_context)
 
         elif data.get('object_kind') == 'note' and data.get('event_type') == 'note': # comment on MR
             if 'merge_request' in data:

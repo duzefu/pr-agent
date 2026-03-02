@@ -256,6 +256,12 @@ push_commands = [
     "/describe",
     "/review",
 ]
+# Standalone push event review (no Merge Request required)
+# Set to true and subscribe to Push events in your GitLab webhook to enable
+handle_standalone_push_trigger = false
+standalone_push_commands = [
+    "/review",
+]
 # Configure SSL validation for GitLab. Can be either set to the path of a custom CA or disabled entirely.
 # ssl_verify = true
 
